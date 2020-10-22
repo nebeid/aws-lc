@@ -1,0 +1,1021 @@
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/Makefile
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/Makefile
+@@ -0,0 +1,41 @@
++#------------------------------------------------------------------------------------
++# Copyright (C) Amazon
++#------------------------------------------------------------------------------------
++
++EXE = p256
++
++SRCDIR = ./src
++BUILDDIR = ./build
++
++
++CFLAGS = -I$(SRCDIR) -std=c11 -MMD
++CFLAGS += -Wall -Wextra -Wpedantic
++CFLAGS += -Werror -Wshadow -Wconversion
++CFLAGS += -march=armv8.4-a+sve -g -O2
++
++SRC_C := $(wildcard $(SRCDIR)/*.c)
++SRC_ASM := $(wildcard $(SRCDIR)/*.S)
++
++OBJ_C := $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.s, $(SRC_C))
++
++.PHONY: all
++all: build_directory executable
++
++DEPS := $(OBJ_C:%.s=%.d)
++
++-include $(DEPS)
++
++$(BUILDDIR)/%.s: $(SRCDIR)/%.c
++	$(CC) $(CFLAGS) $< -S -fverbose-asm -o $@
++
++.PHONY: build_directory
++build_directory:
++	@mkdir -pv $(BUILDDIR)
++
++.PHONY: executable
++executable: $(OBJ_C) $(SRC_ASM)
++	$(CC) $(CFLAGS) $^ -o $(BUILDDIR)/$(EXE)
++
++.PHONY: clean
++clean:
++	rm -fv $(BUILDDIR)/*.d $(BUILDDIR)/*.s $(BUILDDIR)/$(EXE)
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/beeu.S
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/beeu.S
+@@ -0,0 +1,366 @@
++//------------------------------------------------------------------------------------
++// Copyright (C) Amazon
++//------------------------------------------------------------------------------------
++// int beeu_mod_inverse_vartime(uint64_t out[4],
++//                              uint64_t a[4],
++//                              uint64_t n[4]);
++// Inputs and outputs are 256-bit values.
++// computes
++//    |out| = |a|^-1 mod n,
++// where n is odd
++
++// (Binary Extended GCD (Euclidean) Algorithm.
++//  See A. Menezes, P. vanOorschot, and S. Vanstone's Handbook of Applied Cryptography,
++//  Chapter 14, Algorithm 14.61 and Note 14.64
++//  http://cacr.uwaterloo.ca/hac/about/chap14.pdf)
++
++    .arch armv8.4-a+crc+sve
++    .text
++    .align  4
++    .global beeu_mod_inverse_vartime
++    .type beeu_mod_inverse_vartime, %function
++
++    // Function parameters (as per the Procedure Call Standard)
++    // 64-bit registers
++    out         .req x0
++    a           .req x1
++    n           .req x2
++    ret_val     .req x0
++
++    // internal variables
++    // x0-x2, x30 are used to hold the modulus n
++    // x3-x7 are used for parameters, which is not the case in this function, so they are corruptible
++    // x8 is corruptible here
++    // (the function doesn't return a struct, hence x8 doesn't contain a passed-in address
++    //  for that struct).
++    // x9-x15 are corruptible registers
++    // x19-x28 are callee-saved registers
++
++    n0          .req x0
++    n1          .req x1
++    n2          .req x2
++    n3          .req x30
++    // X/Y will hold the inverse parameter
++    // Assumption: X,Y<2^(256)
++    // Initially, X := 1, Y := 0
++    // (X = k0-k4 since x_i are register names)
++    k0          .req x3
++    k1          .req x4
++    k2          .req x5
++    k3          .req x6
++    k4          .req x7
++    y0          .req x8
++    y1          .req x9
++    y2          .req x10
++    y3          .req x11
++    y4          .req x12
++    shift       .req x13
++    t0          .req x14
++    t1          .req x15
++    t2          .req x19
++    t3          .req x20
++    // Initially, A := n, B:= a
++    // (B = f0-f3 since b_i caused interference with register names)
++    a0          .req x21
++    a1          .req x22
++    a2          .req x23
++    a3          .req x24
++    f0          .req x25
++    f1          .req x26
++    f2          .req x27
++    f3          .req x28
++
++.macro  TEST_B_ZERO
++    // if B == 0, jump to end of loop
++    orr     t0, f0, f1
++    orr     t0, t0, f2
++
++    // reverse the bit order of f0. This is needed for clz after this macro
++    rbit     t1, f0
++
++    orr     t0, t0, f3
++    cbz     t0,.Lbeeu_loop_end
++.endm
++
++.macro  SHIFT1 var0, var1, var2, var3, var4
++    // if least_sig_bit(var0) == 0, goto shift1_<ctr>
++    // else
++    // add n and goto shift1_<ctr>
++    // prerequisite: t0 = 0
++    tbz     \var0, #0, .Lshift1_\@
++    adds    \var0, \var0, n0
++    adcs    \var1, \var1, n1
++    adcs    \var2, \var2, n2
++    adcs    \var3, \var3, n3
++    adc     \var4, \var4, t0
++.Lshift1_\@:
++    // var0 := [var1|var0]<64..1>;
++    // i.e. concatenate var1 and var0,
++    //      extract bits <64..1> from the resulting 128-bit value
++    //      and put them in var0
++    extr    \var0, \var1, \var0, #1
++    extr    \var1, \var2, \var1, #1
++    extr    \var2, \var3, \var2, #1
++    extr    \var3, \var4, \var3, #1
++    lsr     \var4, \var4, #1
++.endm
++
++.macro SHIFT256 var0, var1, var2, var3
++    // compilation by clang 10.0.0 with -O2/-O3 of
++    //      a[0] = (a[0] >> count) | (a[1] << (64-count));
++    //      a[1] = (a[1] >> count) | (a[2] << (64-count));
++    //      a[2] = (a[2] >> count) | (a[3] << (64-count));
++    //      a[3] >>= count;
++    // EXTR instruction used in SHIFT1 is similar to x86_64's SHRDQ
++    // except that the second source operand of EXTR is only immediate;
++    // that's why it cannot be used here where the shift is variable
++
++    // In the following,
++    // t0 := 0 - shift
++    //
++    // then var0, for example, will be shifted right as follows:
++    // var0 := (var0 >> (uint(shift) mod 64)) | (var1 << (uint(t0) mod 64))
++    // "uint() mod 64" is from the definition of LSL and LSR instructions.
++    //
++    // What matters here is the order of instructions relative to certain other
++    // instructions, i.e.
++    // - lsr and lsl must precede orr of the corresponding registers.
++    // - lsl must preced the lsr of the same register afterwards.
++    // The chosen order of the instructions overall is to try and maximize
++    // the pipeline usage.
++    neg t0, shift
++    lsr \var0, \var0, shift
++    lsl t1, \var1, t0
++
++    lsr \var1, \var1, shift
++    lsl t2, \var2, t0
++
++    orr \var0, \var0, t1
++
++    lsr \var2, \var2, shift
++    lsl t3, \var3, t0
++
++    orr \var1, \var1, t2
++
++    lsr \var3, \var3, shift
++
++    orr \var2, \var2, t3
++.endm
++
++beeu_mod_inverse_vartime:
++    // Reserve enough space for 14 8-byte registers on the stack
++    // in the first stp call for x29, x30.
++    // Then store the remaining callee-saved registers.
++    //
++    //    | x29 | x30 | x19 | x20 | ... | x27 | x28 |  x0 |  x2 |
++    //    ^                                                     ^
++    //    sp  <------------------- 112 bytes ----------------> old sp
++    //   x29 (FP)
++    //
++    paciasp
++    stp     x29,x30,[sp,#-112]!
++    add	    x29,sp,#0
++    stp     x19,x20,[sp,#16]
++    stp     x21,x22,[sp,#32]
++    stp     x23,x24,[sp,#48]
++    stp     x25,x26,[sp,#64]
++    stp     x27,x28,[sp,#80]
++    stp     x0,x2,[sp,#96]
++
++    // B = f3-f0 := a
++    ldp     f0,f1,[a]
++    ldp     f2,f3,[a,#16]
++
++    // n3-n0 := n
++    // Note: the value of input params are changed in the following.
++    ldp     n0,n1,[n]
++    ldp     n2,n3,[n,#16]
++
++    // A = a3-a0 := n
++    mov     a0, n0
++    mov     a1, n1
++    mov     a2, n2
++    mov     a3, n3
++
++    // X = k4-k0 := 1
++    mov     k0, #1
++    eor     k1, k1, k1
++    eor     k2, k2, k2
++    eor     k3, k3, k3
++    eor     k4, k4, k4
++
++    // Y = y4-y0 := 0
++    eor     y0, y0, y0
++    eor     y1, y1, y1
++    eor     y2, y2, y2
++    eor     y3, y3, y3
++    eor     y4, y4, y4
++
++.Lbeeu_loop:
++    // if B == 0, jump to .Lbeeu_loop_end
++    TEST_B_ZERO
++
++    // 0 < B < |n|,
++    // 0 < A <= |n|,
++    // (1)      X*a  ==  B   (mod |n|),
++    // (2) (-1)*Y*a  ==  A   (mod |n|)
++
++    // Now divide B by the maximum possible power of two in the
++    // integers, and divide X by the same value mod |n|.
++    // When we're done, (1) still holds.
++
++    // shift := number of trailing 0s in b0
++    // (      = number of leading 0s in t1; see the "rbit" instruction in TEST_B_ZERO)
++    clz     shift, t1
++
++    // If there is no shift, goto A,Y shift
++    cbz     shift, .Lbeeu_shift_A_Y
++
++    // Shift B right by "shift" bits
++    SHIFT256    f0, f1, f2, f3
++
++    // Shift X right by "shift" bits, adding n whenever X becomes odd.
++    // shift--;
++    // t0 := 0; needed in the addition to the most significant word in SHIFT1
++    eor     t0, t0, t0
++.Lbeeu_shift_loop_X:
++    SHIFT1  k0, k1, k2, k3, k4
++    subs    shift, shift, #1
++    bne     .Lbeeu_shift_loop_X
++
++    // Note: the steps above perform the same sequence as in p256_beeu-x86_64-asm.pl
++    // with the following differences:
++    // - "shift" is set directly to the number of trailing 0s in B
++    //   (using rbit and clz instructions)
++    // - The loop is only used to call SHIFT1(X)
++    //   and shift is decreased while executing the X loop.
++    // - SHIFT256(B, shift) is performed before right-shifting X; they are independent
++
++.Lbeeu_shift_A_Y:
++    // Same for A and Y.
++    // Afterwards, (2) still holds.
++    // Reverse the bit order of a0
++    // shift := number of trailing 0s in a0 (= number of leading 0s in t1)
++    rbit    t1, a0
++    clz     shift, t1
++
++    // If there is no shift, goto |B-A|, X+Y update
++    cbz     shift, .Lbeeu_update_B_X_or_A_Y
++
++    // Shift A right by "shift" bits
++    SHIFT256    a0, a1, a2, a3
++
++    // Shift Y right by "shift" bits, adding n whenever Y becomes odd.
++    // shift--;
++    // t0 := 0; needed in the addition to the most significant word in SHIFT1
++    eor     t0, t0, t0
++.Lbeeu_shift_loop_Y:
++    SHIFT1  y0, y1, y2, y3, y4
++    subs    shift, shift, #1
++    bne     .Lbeeu_shift_loop_Y
++
++.Lbeeu_update_B_X_or_A_Y:
++    // Try T := B - A; if cs, continue with B > A (cs: carry-set = no borrow)
++    subs    t0, f0, a0
++    sbcs    t1, f1, a1
++    sbcs    t2, f2, a2
++    sbcs    t3, f3, a3
++    bcs     .Lbeeu_B_greater_than_A
++
++    // Else A > B =>
++    // A := A - B; Y := Y + X; goto beginning of the loop
++    subs    a0, a0, f0
++    sbcs    a1, a1, f1
++    sbcs    a2, a2, f2
++    sbcs    a3, a3, f3
++
++    adds    y0, y0, k0
++    adcs    y1, y1, k1
++    adcs    y2, y2, k2
++    adcs    y3, y3, k3
++    adc     y4, y4, k4
++    b       .Lbeeu_loop
++
++.Lbeeu_B_greater_than_A:
++    // Continue with B > A =>
++    // B := B - A; X := X + Y; goto beginning of the loop
++    mov     f0, t0
++    mov     f1, t1
++    mov     f2, t2
++    mov     f3, t3
++
++    adds    k0, k0, y0
++    adcs    k1, k1, y1
++    adcs    k2, k2, y2
++    adcs    k3, k3, y3
++    adc     k4, k4, y4
++    b       .Lbeeu_loop
++
++.Lbeeu_loop_end:
++    // The Euclid's algorithm loop ends when A == gcd(a,n);
++    // this would be 1, when a and n are co-prime (i.e. do not have a common factor).
++    // Since (-1)*Y*a == A (mod |n|), Y>0
++    // then out = -Y mod n
++
++    // Verify that A = 1 ==> (-1)*Y*a = A = 1  (mod |n|)
++    // Is A-1 == 0?
++    // If not, fail.
++    sub     t0, a0, #1
++    orr     t0, t0, a1
++    orr     t0, t0, a2
++    orr     t0, t0, a3
++    cbnz    t0, .Lbeeu_err
++
++    // If Y>n ==> Y:=Y-n
++.Lbeeu_reduction_loop:
++    // k_i := y_i - n_i (X is no longer needed, use it as temp)
++    // (t0 = 0 from above)
++    subs    k0, y0, n0
++    sbcs    k1, y1, n1
++    sbcs    k2, y2, n2
++    sbcs    k3, y3, n3
++    sbcs    k4, y4, t0
++
++    // If result is non-negative (i.e., cs = carry set = no borrow),
++    // y_i := k_i; goto reduce again
++    // else
++    // y_i := y_i; continue
++    csel    y0, k0, y0, cs
++    csel    y1, k1, y1, cs
++    csel    y2, k2, y2, cs
++    csel    y3, k3, y3, cs
++    csel    y4, k4, y4, cs
++    bcs     .Lbeeu_reduction_loop
++
++    // Now Y < n (Y cannot be equal to n, since the inverse cannot be 0)
++    // out = -Y = n-Y
++    subs    y0, n0, y0
++    sbcs    y1, n1, y1
++    sbcs    y2, n2, y2
++    sbcs    y3, n3, y3
++
++    // Save Y in output (out (x0) was saved on the stack)
++    ldr     x3, [sp,#96]
++    stp     y0, y1, [x3]
++    stp     y2, y3, [x3,#16]
++    // return 1 (success)
++    mov     x0, #1
++    b       .Lbeeu_finish
++
++.Lbeeu_err:
++    // return 0 (error)
++    eor     x0, x0, x0
++
++.Lbeeu_finish:
++    // Restore callee-saved registers.
++    add 	sp,x29,#0
++    ldp     x19,x20,[sp,#16]
++    ldp     x21,x22,[sp,#32]
++    ldp     x23,x24,[sp,#48]
++    ldp     x25,x26,[sp,#64]
++    ldp     x27,x28,[sp,#80]
++    ldp     x29,x30,[sp],#112
++    autiasp
++    ret
++
++    .size beeu_mod_inverse_vartime, .-beeu_mod_inverse_vartime
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/experiment.c
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/experiment.c
+@@ -0,0 +1,70 @@
++//------------------------------------------------------------------------------------
++// Copyright (C) Amazon
++//------------------------------------------------------------------------------------
++
++#include <inttypes.h>
++
++typedef double *__attribute__((aligned(64))) aligned_double;
++
++
++uint64_t bn_add_words(uint64_t *restrict a, const uint64_t *restrict b) {
++  uint64_t c, l, t;
++
++  c = 0;
++//  while (n & ~3) {
++    t = a[0];
++    t += c;
++    c = (t < c);
++    l = t + b[0];
++    c += (l < t);
++    a[0] = l;
++    t = a[1];
++    t += c;
++    c = (t < c);
++    l = t + b[1];
++    c += (l < t);
++    a[1] = l;
++    t = a[2];
++    t += c;
++    c = (t < c);
++    l = t + b[2];
++    c += (l < t);
++    a[2] = l;
++    t = a[3];
++    t += c;
++    c = (t < c);
++    l = t + b[3];
++    c += (l < t);
++    a[3] = l;
++//    a += 4;
++//  }
++//  while (n) {
++    t = a[4];
++    t += c;
++    c = (t < c);
++    l = t + 0;
++    c += (l < t);
++    a[4] = l;
++//  }
++  return (uint64_t)c;
++}
++
++void bn_shift1_words(uint64_t *restrict a)
++{
++    a[0] = (a[0] >> 1) | (a[1] << 63);
++    a[1] = (a[1] >> 1) | (a[2] << 63);
++    a[2] = (a[2] >> 1) | (a[3] << 63);
++    a[3] = (a[3] >> 1) | (a[4] << 63);
++    a[4] >>= 1;
++}
++
++void bn_shift(uint64_t *restrict a, uint8_t count)
++{
++    if (count < 64)
++    {
++        a[0] = (a[0] >> count) | (a[1] << (64-count));
++        a[1] = (a[1] >> count) | (a[2] << (64-count));
++        a[2] = (a[2] >> count) | (a[3] << (64-count));
++        a[3] >>= count;
++    }
++}
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/main.c
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/main.c
+@@ -0,0 +1,209 @@
++//------------------------------------------------------------------------------------
++// Copyright (C) Amazon
++//------------------------------------------------------------------------------------
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <inttypes.h>
++#include "p256.h"
++
++#ifdef SELECT_FN
++#define ENTRY_LONG_SIZE  12  //12 64-bit (long) words, 3 coordinates
++#define NUM_ENTRIES      16
++#define TABLE_LONG_SIZE (NUM_ENTRIES * ENTRY_LONG_SIZE)
++
++#define ENTRY_LONG_SIZE_W7  8   // 2 coordinates
++#define NUM_ENTRIES_W7     64
++#define TABLE_LONG_SIZE_W7 (NUM_ENTRIES_W7 * ENTRY_LONG_SIZE_W7)
++#endif
++
++#ifdef BEEU
++#define K_MAX   2000
++// P-256 group order in words (little-endian) obtained from debugging
++// ./third_party/boringssl/crypto/crypto_test --gtest_filter=P256_X86_64Test.*
++static const uint64_t order_words[4] =
++{
++    0xf3b9cac2fc632551, 0xbce6faada7179e84, 0xffffffffffffffff, 0xffffffff00000000
++};
++// In bytes from ec.c
++//{
++//    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
++//    0xFF, 0xFF, 0xFF, 0xFF, 0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84,
++//    0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
++//};
++
++// expected inverse of a = 2, obtained from debugging as above
++static const uint64_t out_exp_2[4] =
++{
++    0x79dce5617e3192a9, 0xde737d56d38bcf42, 0x7fffffffffffffff, 0x7fffffff80000000
++};
++
++static void beeu_print(const int res, const uint64_t out_exp[4], const uint64_t out[4])
++{
++    uint32_t k;
++    if(res == 1)
++    {
++        for (k = 0; k < 4; k++)
++        {
++            if (out_exp[k] != out[k])
++            {
++                break;
++            }
++            printf("k:%d, out_exp: %lX, out: %lX\n", k, out_exp[k], out[k]);
++        }
++        printf("out_exp_p: %lX, out_p: %lX\n", (uintptr_t)out_exp, (uintptr_t)out);
++
++        if (4 == k)
++        {
++            printf("beeu Test passed\n");
++        }
++    }
++}
++#endif
++
++int main()
++{
++#ifdef SELECT_FN
++    uint64_t table[TABLE_LONG_SIZE];
++    uint64_t val[ENTRY_LONG_SIZE];
++    uint32_t index;
++    uint32_t idx_64;
++    uint32_t j;
++
++    uint64_t table_w7[TABLE_LONG_SIZE_W7];
++    uint64_t val_w7[ENTRY_LONG_SIZE_W7];
++
++    uint32_t passed;
++#endif
++
++#ifdef BEEU
++    uint64_t out[4];
++    uint64_t a[4];
++    uint64_t out_exp[4];
++    uint64_t a_out[4];
++    uint64_t k;
++    int beeu_res;
++#endif
++
++#ifdef SELECT_FN
++    /*
++     * Test select_w5
++     */
++    passed = 1;
++    for(j = 1; j <= TABLE_LONG_SIZE; j++)
++    {
++      table[j-1] = (uint64_t)j << 2;
++    }
++
++    for(index = 1; index <= NUM_ENTRIES; index ++)
++    {
++      select_w5(val, table, index);
++
++      // Check the correct entry was selected
++      for(j = 0; j < ENTRY_LONG_SIZE; j++)
++      {
++        // Calculating the index to the 64-bit part of the table entry
++        idx_64 = ((index-1) * ENTRY_LONG_SIZE) + (uint32_t) j;
++        if(val[j] != table[idx_64])
++        {
++          printf("Error: difference at index: %d, j: %d, idx_64: %d, val[j]:%lX, table[idx_64]: %lX\n",
++                 index, j, idx_64, val[j], table[idx_64]);
++          passed = 0;
++        }
++      }
++    }
++    if (1 == passed)
++    {
++        printf("select_w5 Test passed\n");
++    }
++
++    /*
++     * Test select_w7
++     */
++    passed = 1;
++    for(j = 1; j <= TABLE_LONG_SIZE_W7; j++)
++    {
++      table_w7[j-1] = (uint64_t)j << 2;
++    }
++
++    for(index = 1; index <= NUM_ENTRIES_W7; index ++)
++    {
++      select_w7(val_w7, table_w7, index);
++
++      // Check the correct entry was selected
++      for(j = 0; j < ENTRY_LONG_SIZE_W7; j++)
++      {
++        // Calculating the index to the 64-bit part of the table entry
++        idx_64 = ((index-1) * ENTRY_LONG_SIZE_W7) + (uint32_t) j;
++        if(val_w7[j] != table_w7[idx_64])
++        {
++          printf("Error (w7): difference at index: %d, j: %d, idx_64: %d, val[j]:%lX, table[idx_64]: %lX\n",
++                 index, j, idx_64, val_w7[j], table_w7[idx_64]);
++          passed = 0;
++        }
++      }
++    }
++    if (1 == passed)
++    {
++        printf("select_w7 Test passed\n");
++    }
++
++#endif
++
++#ifdef BEEU
++    /*
++     * Test beeu
++     */
++
++    printf("a = 2\n");
++    a[0] = 2;
++    a[1] = a[2] = a[3] = 0;
++
++    beeu_res = beeu_mod_inverse_vartime(out, a, order_words);
++    beeu_print(beeu_res, out_exp_2, out);
++
++    printf("a = 1\n");
++    a[0] = 1;
++    out_exp[0] = 1;
++    out_exp[1] = out_exp[2] = out_exp[3] = 0;
++
++    beeu_res = beeu_mod_inverse_vartime(out, a, order_words);
++    beeu_print(beeu_res, out_exp, out);
++
++    for (k = 1; k < K_MAX; k++)
++    {
++        a[0] = k;
++        if (k >= (K_MAX >>1))
++        {
++            a[1] = k << 8;
++            a[2] = k << 32;
++            a[3] = k << 48;
++        } else {
++            a[1] = a[2] = a[3] = 0;
++        }
++        // out = a^{-1} mod n
++        beeu_res = beeu_mod_inverse_vartime(out, a, order_words);
++        if (beeu_res == 1)
++        {
++            // a_out = out^{-1} mod n
++            beeu_res = beeu_mod_inverse_vartime(a_out, out, order_words);
++            if (beeu_res != 1    ||
++                a_out[0] != a[0] ||
++                a_out[1] != a[1] ||
++                a_out[2] != a[2] ||
++                a_out[3] != a[3]
++                )
++            {
++                printf("beeu Test FAILED at k = %ld; a_out != a\n", k);
++            }
++        }
++    }
++    if (k == K_MAX)
++    {
++        printf("SUCCESS: %ld beeu tests passed\n", k);
++    }
++
++#endif
++
++    return 0;
++}
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/p256.h
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/p256.h
+@@ -0,0 +1,16 @@
++//------------------------------------------------------------------------------------
++// Copyright (C) Amazon
++//------------------------------------------------------------------------------------
++
++#define SELECT_FN   1
++#define BEEU        1
++
++#ifdef SELECT_FN
++void select_w5(uint64_t* restrict val, uint64_t* restrict in_t, uint32_t index);
++
++void select_w7(uint64_t* restrict val, uint64_t* restrict in_t, uint32_t index);
++#endif
++
++#ifdef BEEU
++int beeu_mod_inverse_vartime(uint64_t out[4], const uint64_t a[4], const uint64_t n[4]);
++#endif
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/select.S
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/src/select.S
+@@ -0,0 +1,165 @@
++//------------------------------------------------------------------------------------
++// Copyright (C) Amazon
++//------------------------------------------------------------------------------------
++// void select_w5(uint64_t *val, uint64_t *in_t, int index);
++    .arch armv8.4-a+crc+sve
++    .text
++    .align  4
++    .global select_w5
++    .type select_w5, %function
++
++    // Function parameters (as per the Procedure Call Standard)
++    val         .req x0 // 64-bit register
++    in_t        .req x1 // 64-bit register
++    idx         .req w2 // 32-bit (part of a) register
++                        // $index in p256-armv8-asm.pl
++
++    // internal variables
++    // x9-x15 are corruptible registers, hence also their lower halves
++    // w9-w15
++    Ctr         .req w9     // 32-bit (part of a) register
++    Val_in      .req x10    // internal pointer to the output
++//    In_t_in     .req x11    // internal pointer to the input
++
++    // The following registers are 128-bit long
++    // and are used as vectors of elements.
++    One         .req v0     // $ONE in p256-armv8-asm.pl
++    M0          .req v1
++    Idx_in      .req v2     // $INDEX in p256-armv8-asm.pl
++    Mask        .req v3     // $TMP0 in p256-armv8-asm.pl
++    // Each pair of the following registers holds a 256-bit value
++    // (point coordinate).
++    // Each 6 registers hold a table entry.
++    Ra          .req v16
++    Rb          .req v17
++    Rc          .req v18
++    Rd          .req v19
++    Re          .req v20
++    Rf          .req v21
++    T0a         .req v22
++    T0b         .req v23
++    T0c         .req v24
++    T0d         .req v25
++    T0e         .req v26
++    T0f         .req v27
++
++select_w5:
++    // [Ra - Rf] := 0
++    eor     Ra.16b, Ra.16b, Ra.16b
++    eor     Rb.16b, Rb.16b, Rb.16b
++    eor     Rc.16b, Rc.16b, Rc.16b
++    eor     Rd.16b, Rd.16b, Rd.16b
++    eor     Re.16b, Re.16b, Re.16b
++    eor     Rf.16b, Rf.16b, Rf.16b
++
++    movi    One.4s, #1      // One (vec_4*32) := | 1 | 1 | 1 | 1 |
++    mov     M0.16b, One.16b // M0 := One
++    dup     Idx_in.4s, idx  // Idx_in (vec_4*32) := | idx | idx | idx | idx |
++
++    mov     Val_in, val     // Val_in := val
++//    mov     In_t_in, in_t   // In_t_in := in_t
++    mov     Ctr, #16        // Ctr := 16; loop counter
++
++.Lselect_w5_loop:
++    // [T0a-T0f] := Load a (3 * 256-bit = 6 * 128-bit) table entry pointed to by in_t
++    //  and advance in_t to point to the next entry
++    ld1     {T0a.2d, T0b.2d, T0c.2d, T0d.2d}, [in_t],#64
++    ld1     {T0e.2d, T0f.2d}, [in_t],#32
++
++    // Mask = (M0 == Idx_in)? All 1s : All 0s
++    cmeq    Mask.4s, M0.4s, Idx_in.4s
++
++    // Increment M0 lanes
++    add     M0.4s, M0.4s, One.4s
++
++    // [T0a-T0f] := [T0a-T0f] AND Mask;
++    // values read from the table will be 0'd if M0 != Idx_in
++    // [Ra-Rf] := [Ra-Rf] OR [T0a-T0b]
++    // values in output registers will remain the same if M0 != Idx_in
++    and     T0a.16b, T0a.16b, Mask.16b
++    and     T0b.16b, T0b.16b, Mask.16b
++    orr     Ra.16b, Ra.16b, T0a.16b
++    orr     Rb.16b, Rb.16b, T0b.16b
++
++    and     T0c.16b, T0c.16b, Mask.16b
++    and     T0d.16b, T0d.16b, Mask.16b
++    orr     Rc.16b, Rc.16b, T0c.16b
++    orr     Rd.16b, Rd.16b, T0d.16b
++
++    and     T0e.16b, T0e.16b, Mask.16b
++    and     T0f.16b, T0f.16b, Mask.16b
++    orr     Re.16b, Re.16b, T0e.16b
++    orr     Rf.16b, Rf.16b, T0f.16b
++
++    // Decrement loop counter; loop back if not 0
++    subs    Ctr, Ctr, #1
++    bne     .Lselect_w5_loop
++
++    // Write [Ra-Rf] to memory at the output pointer
++    st1     {Ra.2d, Rb.2d, Rc.2d, Rd.2d}, [Val_in],#64
++    st1     {Re.2d, Rf.2d}, [Val_in]
++    ret
++
++    .size select_w5, .-select_w5
++
++// void ecp_nistz256_select_w7(uint64_t *val, uint64_t *in_t, int index);
++.align  4
++.global select_w7
++.type select_w7, %function
++
++select_w7:
++    // One (vec_4*32) := | 1 | 1 | 1 | 1 |
++    // Idx_in (vec_4*32) := | idx | idx | idx | idx |
++    movi    One.4s, #1
++    dup     Idx_in.4s, idx
++
++    // [Ra - Rd] := 0
++    eor     Ra.16b, Ra.16b, Ra.16b
++    eor     Rb.16b, Rb.16b, Rb.16b
++    eor     Rc.16b, Rc.16b, Rc.16b
++    eor     Rd.16b, Rd.16b, Rd.16b
++
++    // M0 := One
++    mov     M0.16b, One.16b
++
++    // Ctr := 64; loop counter
++    mov     Ctr, #64
++
++.Lselect_w7_loop:
++    // [T0a-T0d] := Load a (2 * 256-bit = 4 * 128-bit) table entry pointed to by in_t
++    //  and advance in_t to point to the next entry
++    ld1     {T0a.2d, T0b.2d, T0c.2d, T0d.2d}, [in_t],#64
++
++    // Mask = (M0 == Idx_in)? All 1s : All 0s
++    cmeq    Mask.4s, M0.4s, Idx_in.4s
++
++    // Increment M0 lanes
++    add     M0.4s, M0.4s, One.4s
++
++    // prefetch data for load into L1 cache in a streaming fashion
++    // (streaming prefetch for datat that is used only once)
++    prfm    pldl1strm, [in_t]
++
++    // [T0a-T0d] := [T0a-T0d] AND Mask;
++    // values read from the table will be 0'd if M0 != Idx_in
++    // [Ra-Rd] := [Ra-Rd] OR [T0a-T0d]
++    // values in output registers will remain the same if M0 != Idx_in
++    and     T0a.16b, T0a.16b, Mask.16b
++    and     T0b.16b, T0b.16b, Mask.16b
++    orr     Ra.16b, Ra.16b, T0a.16b
++    orr     Rb.16b, Rb.16b, T0b.16b
++
++    and     T0c.16b, T0c.16b, Mask.16b
++    and     T0d.16b, T0d.16b, Mask.16b
++    orr     Rc.16b, Rc.16b, T0c.16b
++    orr     Rd.16b, Rd.16b, T0d.16b
++
++    // Decrement loop counter; loop back if not 0
++    subs    Ctr, Ctr, #1
++    bne     .Lselect_w7_loop
++
++    // Write [Ra-Rd] to memory at the output pointer
++    st1     {Ra.2d, Rb.2d, Rc.2d, Rd.2d}, [val]
++    ret
++
++    .size select_w7, .-select_w7
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/Readme.md
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/Readme.md
+@@ -0,0 +1,37 @@
++#P256 Armv8 Assembly Functions
++This application was used to develop the assembly functions committed to
++[awsls:p256-armv8](https://github.com/awslabs/aws-lc/tree/p256-armv8)
++
++The goal is bringing the P-256 performance on ARMv8 at par with x86_64.
++The ARMv8 assembly code is taken from OpenSSL 1.1.1 (at [this commit](openssl/openssl@46a9ee8)).
++The goal is achieved by reusing the AWS-LC P-256 implementation in `p256-x86_64.c` (nistz256) with ARMv8.
++This is possible because the assembly functions required to support that code have their analogous functions in
++the imported OpenSSL.
++(Namely, the file [openss/crypto/ec/asm/ecp_nistz256-armv8.pl](https://github.com/openssl/openssl/blob/46a9ee8c796c8b5f8d95290676119b4f3d72be91/crypto/ec/asm/ecp_nistz256-armv8.pl)
++was imported with slight modification in the first 2 commits.)
++However, there are 3 x86_64 assembly functions that do not have corresponding functions in that file.
++Those functions are `ecp_nistz256_select_w5` and `ecp_nistz256_select_w7` and `beeu_mod_inverse_vartime`.
++
++###`ecp_nistz256_select_w5`
++This function performs a constant-time table lookup by reading all entries, one at a time,
++and using a mask based on the index to keep only the desired entry in the result destination.
++* There are 16 entries in the table
++* Each entry consists of 3 256-bit values which are the projective coordinates of a point
++on the P-256 curve.
++* The index is in the range [1,16].
++
++###`ecp_nistz256_select_w7`
++This function is almost identical to `ecp_nistz256_select_w5`. The differences are:
++* There are 64 entries in the table
++* Each entry consists of 2 256-bit values which are the affine coordinates of a point
++on the P-256 curve.
++* The index is in the range [1,64].
++
++### `beeu_mod_inverse_vartime`
++This function is an implementation of the Binary Extended GCD (Euclidean) Algorithm,
++for a reference, see A. Menezes, P. vanOorschot, and S. Vanstone's Handbook of Applied Cryptography,
++ Chapter 14, Algorithm 14.61 and Note 14.64
++ http://cacr.uwaterloo.ca/hac/about/chap14.pdf
++
++ The python model for this function is in `beeu.py`.
++ It is used to compute the modular inverse of a value |a| modulo n, where n is odd.
+\ No newline at end of file
+Index: aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/beeu.py
+===================================================================
+--- /dev/null
++++ aws-lc/third_party/boringssl/util/asm_dev/armv8/p256/beeu.py
+@@ -0,0 +1,76 @@
++# Binary Extended GCD (Euclidean) Algorithm
++# Inputs and outputs are 256-bit values.
++# computes
++#    |out| = |a|^-1 mod n,
++# where n is odd
++# See A. Menezes, P. vanOorschot, and S. Vanstone's Handbook of Applied Cryptography,
++# Chapter 14, Algorithm 14.61 and Note 14.64
++# http://cacr.uwaterloo.ca/hac/about/chap14.pdf
++
++# Details:
++# In Alg 14.61, let x and y be co-prime, this means that they have no common factor. Specifically,
++#    v = gcd(x,y) = 1 = ax + by
++# If we would like to calculate the inverse of x modulo y, we can use Alg. 14.61,
++# where a would be that inverse. In other words,
++#    ax == 1 (mod y) (where the symbol “==“ denotes ”congruent“)
++# =>  a == x^{-1} (mod y)
++# It can be shown that throughout all the iterations of the algorithm, the following holds:
++#    u = Ax + By
++#    v = Cx + Dy
++# We are not interested in the values of B and D in this case,
++# so they need not be computed by the algorithm.
++# This means the following congruences hold through the iterations of the algorithm.
++#    Ax == u (mod y)
++#    Cx == v (mod y)
++
++# Now we will modify the notation to match that of
++# BN_mod_inverse_odd (http://ec2-34-223-251-4.us-west-2.compute.amazonaws.com/source/xref/boringssl/crypto/fipsmodule/bn/gcd.c?r=bb3a4569#116)
++# on which beeu_mod_inverse_vartime (http://ec2-34-223-251-4.us-west-2.compute.amazonaws.com/source/xref/boringssl/crypto/fipsmodule/ec/asm/p256_beeu-x86_64-asm.pl?r=c1d8c5b0#35)
++# is based. In those functions:
++#    x, y -> a, n
++#    u, v -> B, A
++#    A, C -> X, Y’, where Y’ = -Y
++# Hence, the following holds
++#     Xa == B (mod n)
++#    -Ya == A (mod n)
++
++def beeu(a, n):
++    X = 1
++    Y = 0
++    B = a
++    A = n
++    while (B != 0):
++        while (B % 2) == 0:
++            B >>= 1
++            if (X % 2) == 1:
++                X = X + n
++            X >>= 1
++        while (A % 2) == 0:
++            A >>= 1
++            if (Y % 2) == 1:
++                Y = Y + n
++            Y >>= 1
++        if (B >= A):
++            B = B - A
++            X = X + Y
++        else:
++            A = A - B
++            Y = Y + X
++    if (A != 1):
++        # error
++        return 0
++    else:
++        while (Y > n):
++            Y = Y - n
++        Y = n - Y
++        return Y
++
++def test_beeu():
++    a = 0x2
++    n = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
++    out_exp = 0x7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a9
++    out = beeu(a,n)
++    print(hex(out))
++    assert beeu(a,n) == out_exp
++
++test_beeu()

@@ -19,6 +19,16 @@ if(${ARCH} STREQUAL "x86_64")
     vpaes-x86_64.${ASM_EXT}
     x86_64-mont5.${ASM_EXT}
     x86_64-mont.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_add_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_montmul_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_montsqr_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_sub_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_neg_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_tomont_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_demont_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_bigendian_6.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_mux_6.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/x86/p384/bignum_nonzero_6.${ASM_EXT}
   )
 endif()
 
@@ -70,6 +80,16 @@ if(${ARCH} STREQUAL "aarch64")
     sha256-armv8.${ASM_EXT}
     sha512-armv8.${ASM_EXT}
     vpaes-armv8.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_add_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_montmul_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_montsqr_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_sub_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_neg_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_tomont_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_demont_p384.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_bigendian_6.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_mux_6.${ASM_EXT}
+    ${PROJECT_SOURCE_DIR}/third_party/s2n-bignum/arm/p384/bignum_nonzero_6.${ASM_EXT}
   )
 endif()
 

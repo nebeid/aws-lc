@@ -38,14 +38,19 @@ Arg <- QuotedArg / [[0-9a-z%+\-*_@.]]*
 QuotedArg <- '"' QuotedText '"'
 QuotedText <- (EscapedChar / [^"])*
 LabelContainingDirective <- LabelContainingDirectiveName WS SymbolArgs
-LabelContainingDirectiveName <- ".xword" / ".word" / ".long" / ".set" / ".8byte" / ".4byte" / ".quad" / ".tc" / ".localentry" / ".size" / ".type" / ".uleb128" / ".sleb128"
+LabelContainingDirectiveName <- ".xword" / ".word" / ".long" / ".set" / ".byte" / ".8byte" / ".4byte" / ".quad" / ".tc" / ".localentry" / ".size" / ".type" / ".uleb128" / ".sleb128"
 SymbolArgs <- SymbolArg ((WS? ',' WS?) SymbolArg)*
-SymbolArg <- Offset /
-             SymbolType /
-             (Offset / LocalSymbol / SymbolName / Dot) WS? Operator WS? (Offset / LocalSymbol / SymbolName) /
-             LocalSymbol TCMarker? /
-             SymbolName Offset /
-             SymbolName TCMarker?
+SymbolShift <- ('<<' / '>>') WS? [0-9]+
+SymbolArg <- (OpenParen WS?)? (
+               Offset /
+               SymbolType /
+               (Offset / LocalSymbol / SymbolName / Dot) WS? Operator WS? (Offset / LocalSymbol / SymbolName) /
+               LocalSymbol TCMarker? /
+               SymbolName Offset /
+               SymbolName TCMarker?)
+             (WS? CloseParen)? (WS? SymbolShift)?
+OpenParen <- '('
+CloseParen <- ')'
 SymbolType <- [@%] ('function' / 'object')
 Dot <- '.'
 TCMarker <- '[TC]'

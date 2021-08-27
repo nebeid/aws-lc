@@ -72,12 +72,11 @@ int X509v3_get_ext_count(const STACK_OF(X509_EXTENSION) *x)
 int X509v3_get_ext_by_NID(const STACK_OF(X509_EXTENSION) *x, int nid,
                           int lastpos)
 {
-    const ASN1_OBJECT *obj;
-
-    obj = OBJ_nid2obj(nid);
-    if (obj == NULL)
-        return (-2);
-    return (X509v3_get_ext_by_OBJ(x, obj, lastpos));
+    const ASN1_OBJECT *obj = OBJ_nid2obj(nid);
+    if (obj == NULL) {
+        return -1;
+    }
+    return X509v3_get_ext_by_OBJ(x, obj, lastpos);
 }
 
 int X509v3_get_ext_by_OBJ(const STACK_OF(X509_EXTENSION) *sk,
@@ -172,11 +171,9 @@ STACK_OF(X509_EXTENSION) *X509v3_add_ext(STACK_OF(X509_EXTENSION) **x,
  err:
     OPENSSL_PUT_ERROR(X509, ERR_R_MALLOC_FAILURE);
  err2:
-    if (new_ex != NULL)
-        X509_EXTENSION_free(new_ex);
-    if (sk != NULL)
-        sk_X509_EXTENSION_free(sk);
-    return (NULL);
+    X509_EXTENSION_free(new_ex);
+    sk_X509_EXTENSION_free(sk);
+    return NULL;
 }
 
 X509_EXTENSION *X509_EXTENSION_create_by_NID(X509_EXTENSION **ex, int nid,

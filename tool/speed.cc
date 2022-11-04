@@ -396,6 +396,222 @@ static bool SpeedRSAKeyGen(const std::string &selected) {
   return true;
 }
 
+// Adapted from crypto/cipher_extra/aead_test.cc TEST(AEADTest, WycheproofAESGCM)
+//#include <openssl/aead.h>
+#include "../crypto/test/file_test.h"
+#include "wycheproof_util_reduced.h"
+//#include "../crypto/test/test_util.h"
+
+static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
+  t->IgnoreInstruction("ivSize");
+
+  std::vector<uint8_t> aad, ct, iv, key, msg, tag;
+  if (!(t->GetBytes(&aad, "aad") &&
+        t->GetBytes(&ct, "ct") &&
+        t->GetBytes(&iv, "iv") &&
+        t->GetBytes(&key, "key") &&
+        t->GetBytes(&msg, "msg") &&
+        t->GetBytes(&tag, "tag"))) {
+    return;
+  }
+
+  WycheproofResult_Reduced result;
+  if (!GetWycheproofResult_Reduced(t, &result)) {
+    return;
+  }
+
+  std::string tag_size_str;
+  if (!t->GetInstruction(&tag_size_str, "tagSize")) {
+    return;
+  }
+  size_t tag_size = static_cast<size_t>(atoi(tag_size_str.c_str()));
+  if (!(0u == tag_size % 8)) {
+    return;
+  }
+  tag_size /= 8;
+
+
+  BM_NAMESPACE::UniquePtr<EVP_CIPHER_CTX> ctx(EVP_CIPHER_CTX_new());
+  int outlen, unused;
+//  int *len_ptr = &len;
+  static const unsigned kAlignment = 16;
+
+/*
+  std::vector<uint8_t> ct_and_tag(ct.size() + tag.size() + kAlignment);
+  ct_and_tag.insert(ct_and_tag.begin(), ct.begin(), ct.end());
+  ct_and_tag.insert(ct_and_tag.begin() + ct.size(), tag.begin(), tag.end());
+*/
+
+  std::vector<uint8_t> msg_out(msg.size() + kAlignment);
+  std::vector<uint8_t> tag_out(tag.size());
+  std::vector<uint8_t> ct_out(ct.size() + tag.size() + kAlignment);
+/*
+  // Note: the deprecated |EVP_CIPHER|-based AEAD API is sensitive to whether
+  // parameters are NULL, so it is important to skip the |in| and |aad|
+  // |EVP_CipherUpdate| calls when empty.
+    if (!EVP_DecryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data())) {
+    fprintf(stderr, "EVP_DecryptInit_ex failed.\n");
+    ERR_print_errors_fp(stderr);
+    return;
+  }
+
+  if (!aad.empty()) {
+    if (!EVP_DecryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size())) {
+      fprintf(stderr, "Decryption failed.\n");
+      ERR_print_errors_fp(stderr);
+      return;
+    }
+  }
+
+  if (!ct.empty())
+*/
+
+
+  if (!(EVP_DecryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
+        EVP_DecryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
+        EVP_DecryptUpdate(ctx.get(), msg_out.data(), &outlen, ct.data(), ct.size()) &&
+        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, 16, tag.data()) &&
+        EVP_DecryptFinal_ex(ctx.get(), msg_out.data()+ outlen, &unused) )) {
+    fprintf(stderr, "tag: 0x%02x%02x: Decryption failed.\n", tag.data()[0],tag.data()[1]);
+    ERR_print_errors_fp(stderr);
+    return;
+  }
+
+  if (!(EVP_EncryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
+        EVP_EncryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
+        EVP_EncryptUpdate(ctx.get(), ct_out.data(), &outlen, msg.data(), msg.size()) &&
+        EVP_EncryptFinal_ex(ctx.get(), ct_out.data() + outlen, &unused) &&
+        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag_out.data()) )) {
+    fprintf(stderr, "Encryption failed.\n");
+    ERR_print_errors_fp(stderr);
+    return;
+  }
+
+
+
+
+/*
+
+
+  WycheproofResult result;
+  if (!GetWycheproofResult(t, &result)) {
+    return;
+  }
+
+  std::vector<uint8_t> ct_and_tag = ct;
+  ct_and_tag.insert(ct_and_tag.end(), tag.begin(), tag.end());
+
+  bssl::ScopedEVP_AEAD_CTX ctx;
+  if (!EVP_AEAD_CTX_init(ctx.get(), aead, key.data(), key.size(),
+                         tag_size, nullptr)) {
+    return;
+  }
+  std::vector<uint8_t> out(msg.size());
+  size_t out_len;
+  // Wycheproof tags small AES-GCM IVs as "acceptable" and otherwise does not
+  // use it in AEADs. Any AES-GCM IV that isn't 96 bits is absurd, but our API
+  // supports those, so we treat SmallIv tests as valid.
+  if (result.IsValid({"SmallIv"})) {
+    // Decryption should succeed.
+    if (!EVP_AEAD_CTX_open(ctx.get(), out.data(), &out_len, out.size(),
+                                  iv.data(), iv.size(), ct_and_tag.data(),
+                           ct_and_tag.size(), aad.data(), aad.size())) {
+      fprintf(stderr, "Decryption failed.\n");
+      ERR_print_errors_fp(stderr);
+      return;
+    }
+    if (!(0 == memcmp(msg.data(), out.data(), out_len))) {
+      fprintf(stderr, "Decrypted data does not match plaintext.\n");
+      ERR_print_errors_fp(stderr);
+      return;
+    }
+
+    // Decryption in-place should succeed.
+    out = ct_and_tag;
+    if (!(EVP_AEAD_CTX_open(ctx.get(), out.data(), &out_len, out.size(),
+                                  iv.data(), iv.size(), out.data(), out.size(),
+                            aad.data(), aad.size()))) {
+      fprintf(stderr, "In-place decryption failed.\n");
+      ERR_print_errors_fp(stderr);
+      return;
+    }
+    if (!(0 == memcmp(msg.data(), out.data(), out_len))) {
+      fprintf(stderr, "In-place decrypted data does not match plaintext.\n");
+      ERR_print_errors_fp(stderr);
+      return;
+    }
+
+
+//
+    // AEADs are deterministic, so encryption should produce the same result.
+    out.resize(ct_and_tag.size());
+    ASSERT_TRUE(EVP_AEAD_CTX_seal(ctx.get(), out.data(), &out_len, out.size(),
+                                  iv.data(), iv.size(), msg.data(), msg.size(),
+                                  aad.data(), aad.size()));
+    EXPECT_EQ(Bytes(ct_and_tag), Bytes(out.data(), out_len));
+
+    // Encrypt in-place.
+    out = msg;
+    out.resize(ct_and_tag.size());
+    ASSERT_TRUE(EVP_AEAD_CTX_seal(ctx.get(), out.data(), &out_len, out.size(),
+                                  iv.data(), iv.size(), out.data(), msg.size(),
+                                  aad.data(), aad.size()));
+    EXPECT_EQ(Bytes(ct_and_tag), Bytes(out.data(), out_len));
+  } else {
+    // Decryption should fail.
+    EXPECT_FALSE(EVP_AEAD_CTX_open(ctx.get(), out.data(), &out_len, out.size(),
+                                   iv.data(), iv.size(), ct_and_tag.data(),
+                                   ct_and_tag.size(), aad.data(), aad.size()));
+
+    // Decryption in-place should also fail.
+    out = ct_and_tag;
+    EXPECT_FALSE(EVP_AEAD_CTX_open(ctx.get(), out.data(), &out_len, out.size(),
+                                   iv.data(), iv.size(), out.data(), out.size(),
+                                   aad.data(), aad.size()));
+  }
+*/
+}
+
+static void AESGCMTestVector(void) {
+  FileTestGTest("third_party/wycheproof_testvectors/aes_gcm_test.txt",
+                [](FileTest *t) {
+    std::string key_size_str;
+    t->GetInstruction(&key_size_str, "keySize");
+    const EVP_CIPHER *cipher;
+    switch (atoi(key_size_str.c_str())) {
+    case 128:
+      cipher = EVP_aes_128_gcm();
+      break;
+    case 192:
+      cipher = EVP_aes_192_gcm();
+      break;
+    case 256:
+      cipher = EVP_aes_256_gcm();
+      break;
+    default:
+      fprintf(stderr, "Unknown key size: %s.\n", key_size_str.c_str());
+      break;
+/*
+    const EVP_AEAD *aead;
+    switch (atoi(key_size_str.c_str())) {
+    case 128:
+      aead = EVP_aead_aes_128_gcm();
+      break;
+    case 192:
+      aead = EVP_aead_aes_192_gcm();
+      break;
+    case 256:
+      aead = EVP_aead_aes_256_gcm();
+      break;
+    default:
+      FAIL() << "Unknown key size: " << key_size_str;
+*/
+    }
+
+    RunWycheproofTestCase(t, cipher);
+  });
+}
+
 static bool SpeedAESGCMChunk(const EVP_CIPHER *cipher, std::string name,
                              size_t chunk_byte_len, size_t ad_len, bool encrypt) {
   int len;
@@ -428,6 +644,8 @@ static bool SpeedAESGCMChunk(const EVP_CIPHER *cipher, std::string name,
   if (encrypt) {
     std::string encryptName = name + " Encrypt";
     TimeResults encryptResults;
+
+    AESGCMTestVector();
 
     // Call EVP_EncryptInit_ex once with the cipher, in the benchmark loop reuse the cipher
     if (!EVP_EncryptInit_ex(ctx.get(), cipher, NULL, key.get(), nonce.get())){

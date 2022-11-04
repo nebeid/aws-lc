@@ -18,6 +18,9 @@ add_executable(
   speed.cc
   tool.cc
   transport_common.cc
+  file_test_gtest_wyche.cc
+  crypto_test_data_wycheproof_gcm.cc
+  wycheproof_util_reduced.cc
 )
 
 target_include_directories(bssl PUBLIC ../include)
@@ -30,15 +33,15 @@ if(WIN32)
 endif()
 
 if(APPLE OR WIN32 OR ANDROID)
-  target_link_libraries(bssl ssl crypto)
+  target_link_libraries(bssl ssl crypto test_support_lib)
   set(LIBRT_FLAG "")
 else()
   find_library(FOUND_LIBRT rt)
   if(FOUND_LIBRT)
-    target_link_libraries(bssl ssl crypto -lrt)
+    target_link_libraries(bssl ssl crypto test_support_lib -lrt)
     set(LIBRT_FLAG "-lrt")
   else()
-    target_link_libraries(bssl ssl crypto)
+    target_link_libraries(bssl ssl crypto test_support_lib)
     set(LIBRT_FLAG "")
   endif()
 endif()
@@ -55,13 +58,16 @@ function(build_benchmark target_name install_path)
           args.cc
           const.cc
           benchmark.cc
+          file_test_gtest_wyche.cc
+          crypto_test_data_wycheproof_gcm.cc
+          wycheproof_util_reduced.cc
   )
   # Link with the internal tool directory for shared headers with the rest of the tool instead of the top level AWS-LC
   # include directory
   target_include_directories(${target_name} PUBLIC ${install_path}/include ${AWSLC_INSTALL_DIR}/include/internal/tool)
   target_link_libraries(${target_name} ${libcrypto-${target_name}} ${LIBRT_FLAG})
   if(NOT MSVC AND NOT ANDROID)
-    target_link_libraries(${target_name} pthread dl)
+    target_link_libraries(${target_name} pthread dl test_support_lib)
   endif()
 
 endfunction()
@@ -71,7 +77,7 @@ if(AWSLC_INSTALL_DIR)
 endif()
 
 # This expects a directory which contains the includes in include/openssl/ and the OpenSSL artifacts in lib/
-# Currently this is the default OpenSSL build we target so the "OPENSSL_1_1_BENCHMARK" flag isn't used, 
+# Currently this is the default OpenSSL build we target so the "OPENSSL_1_1_BENCHMARK" flag isn't used,
 # but we include this to maintain uniformity across OpenSSL versions
 if(OPENSSL_1_1_INSTALL_DIR)
   build_benchmark(ossl_1_1_bm ${OPENSSL_1_1_INSTALL_DIR})

@@ -13,7 +13,7 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 
 #include "file_test.h"
-
+#include <openssl/base.h>
 #include <algorithm>
 #include <utility>
 

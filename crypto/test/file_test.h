@@ -15,12 +15,14 @@
 #ifndef OPENSSL_HEADER_CRYPTO_TEST_FILE_TEST_H
 #define OPENSSL_HEADER_CRYPTO_TEST_FILE_TEST_H
 
-#include <openssl/base.h>
+//#include <openssl/base.h>
+#define OPENSSL_PRINTF_FORMAT_FUNC(string_index, first_to_check) \
+  __attribute__((__format__(__printf__, string_index, first_to_check)))
 
 #include <stdint.h>
 
-OPENSSL_MSVC_PRAGMA(warning(push))
-OPENSSL_MSVC_PRAGMA(warning(disable : 4702))
+//OPENSSL_MSVC_PRAGMA(warning(push))
+//OPENSSL_MSVC_PRAGMA(warning(disable : 4702))
 
 #include <functional>
 #include <map>
@@ -29,7 +31,7 @@ OPENSSL_MSVC_PRAGMA(warning(disable : 4702))
 #include <string>
 #include <vector>
 
-OPENSSL_MSVC_PRAGMA(warning(pop))
+//OPENSSL_MSVC_PRAGMA(warning(pop))
 
 // File-based test framework.
 //

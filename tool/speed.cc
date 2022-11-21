@@ -406,6 +406,20 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
   t->IgnoreInstruction("ivSize");
 
   std::vector<uint8_t> aad, ct, iv, key, msg, tag;
+  // The following note is copied from TestOperation()
+  // in crypto/cipher_extra/cipher_test.cc:
+  // Note: the deprecated |EVP_CIPHER|-based AEAD API is sensitive to whether
+  // parameters are NULL, so it is important to skip the |in| and |aad|
+  // |EVP_CipherUpdate| calls when empty.
+  //
+  // In the tests below, instead of inserting checks, e.g. aad.empty(),
+  // the following steps create non-NULL pointers for input parameters.
+  // aad.data(), msg.data() and ct.data()
+  // to make the Update() functions less sensitive to them being NULL.
+  // Note that OpenSSL 3.0 doesn't have this sensitivity.
+  aad.resize(1); aad.resize(0);
+  msg.resize(1); msg.resize(0);
+  ct.resize(1); ct.resize(0);
   if (!(t->GetBytes(&aad, "aad") &&
         t->GetBytes(&ct, "ct") &&
         t->GetBytes(&iv, "iv") &&
@@ -466,33 +480,47 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
   if (!ct.empty())
 */
 
+  // Wycheproof tags small AES-GCM IVs as "acceptable" and otherwise does not
+  // use it in AEADs. Any AES-GCM IV that isn't 96 bits is absurd, but our API
+  // supports those, so we treat SmallIv tests as valid.
+  if (result.IsValid({"SmallIv"})) {
+    // Decryption should succeed.
+    if (!(EVP_DecryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
+          EVP_DecryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
+          EVP_DecryptUpdate(ctx.get(), msg_out.data(), &outlen, ct.data(), ct.size()) &&
+          EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, 16, tag.data()) &&
+          EVP_DecryptFinal_ex(ctx.get(), msg_out.data()+ outlen, &unused) )) {
+      fprintf(stderr, "tag: 0x%02x%02x: Decryption failed.\n", tag.data()[0],tag.data()[1]);
+      ERR_print_errors_fp(stderr);
+      return;
+    }
 
-  if (!(EVP_DecryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
-        EVP_DecryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
-        EVP_DecryptUpdate(ctx.get(), msg_out.data(), &outlen, ct.data(), ct.size()) &&
-        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, 16, tag.data()) &&
-        EVP_DecryptFinal_ex(ctx.get(), msg_out.data()+ outlen, &unused) )) {
-    fprintf(stderr, "tag: 0x%02x%02x: Decryption failed.\n", tag.data()[0],tag.data()[1]);
-    ERR_print_errors_fp(stderr);
-    return;
+    if (!(EVP_EncryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
+          EVP_EncryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
+          EVP_EncryptUpdate(ctx.get(), ct_out.data(), &outlen, msg.data(), msg.size()) &&
+          EVP_EncryptFinal_ex(ctx.get(), ct_out.data() + outlen, &unused) &&
+          EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag_out.data()) )) {
+      fprintf(stderr, "Encryption failed.\n");
+      ERR_print_errors_fp(stderr);
+      return;
+    }
+    // TODO: encryption and decryption in place.
+  } else {
+    // Decryption should fail.
+    if ((EVP_DecryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
+          EVP_DecryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
+          EVP_DecryptUpdate(ctx.get(), msg_out.data(), &outlen, ct.data(), ct.size()) &&
+          EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, 16, tag.data()) &&
+          EVP_DecryptFinal_ex(ctx.get(), msg_out.data()+ outlen, &unused) )) {
+      fprintf(stderr, "tag: 0x%02x%02x: Decryption should have failed but succeeded.\n",
+              tag.data()[0],tag.data()[1]);
+      ERR_print_errors_fp(stderr);
+      return;
+    }
   }
-
-  if (!(EVP_EncryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
-        EVP_EncryptUpdate(ctx.get(), NULL, &unused, aad.data(), aad.size()) &&
-        EVP_EncryptUpdate(ctx.get(), ct_out.data(), &outlen, msg.data(), msg.size()) &&
-        EVP_EncryptFinal_ex(ctx.get(), ct_out.data() + outlen, &unused) &&
-        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag_out.data()) )) {
-    fprintf(stderr, "Encryption failed.\n");
-    ERR_print_errors_fp(stderr);
-    return;
-  }
-
-
 
 
 /*
-
-
   WycheproofResult result;
   if (!GetWycheproofResult(t, &result)) {
     return;

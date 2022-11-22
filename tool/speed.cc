@@ -492,7 +492,10 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
           EVP_DecryptFinal_ex(ctx.get(), msg_out.data()+ outlen, &unused) )) {
       fprintf(stderr, "tag: 0x%02x%02x: Decryption failed.\n", tag.data()[0],tag.data()[1]);
       ERR_print_errors_fp(stderr);
-      return;
+    }
+    if (memcmp(msg.data(), msg_out.data(), msg.size())) {
+      fprintf(stderr, "tag: 0x%02x%02x: Decrypted msg mismatch.\n", tag.data()[0],tag.data()[1]);
+      ERR_print_errors_fp(stderr);
     }
 
     if (!(EVP_EncryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data()) &&
@@ -500,10 +503,15 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
           EVP_EncryptUpdate(ctx.get(), ct_out.data(), &outlen, msg.data(), msg.size()) &&
           EVP_EncryptFinal_ex(ctx.get(), ct_out.data() + outlen, &unused) &&
           EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag_out.data()) )) {
-      fprintf(stderr, "Encryption failed.\n");
+      fprintf(stderr, "tag: 0x%02x%02x: Encryption failed.\n", tag.data()[0],tag.data()[1]);
       ERR_print_errors_fp(stderr);
-      return;
     }
+    if (memcmp(ct.data(), ct_out.data(), ct.size()) ||
+        memcmp(tag.data(), tag_out.data(), tag.size()) ) {
+      fprintf(stderr, "tag: 0x%02x%02x: Encrypted msg and tag mismatch.\n", tag.data()[0],tag.data()[1]);
+      ERR_print_errors_fp(stderr);
+    }
+
     // TODO: encryption and decryption in place.
   } else {
     // Decryption should fail.

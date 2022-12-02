@@ -477,6 +477,8 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
 
   if (!ct.empty())
 */
+  // Debug values
+  uint8_t tag0 = tag.data()[0], tag1 = tag.data()[1];
 
   // Wycheproof tags small AES-GCM IVs as "acceptable" and otherwise does not
   // use it in AEADs. Any AES-GCM IV that isn't 96 bits is absurd, but our API
@@ -492,7 +494,7 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
       ERR_print_errors_fp(stderr);
     }
     if (memcmp(msg.data(), msg_out.data(), msg.size())) {
-      fprintf(stderr, "tag: 0x%02x%02x: Decrypted msg mismatch.\n", tag.data()[0],tag.data()[1]);
+      fprintf(stderr, "tag: 0x%02x%02x: Decrypted msg mismatch.\n", tag0, tag1);
       ERR_print_errors_fp(stderr);
     }
 
@@ -501,7 +503,7 @@ static void RunWycheproofTestCase(FileTest *t, const EVP_CIPHER *cipher) {
           EVP_EncryptUpdate(ctx.get(), ct_out.data(), &outlen, msg.data(), msg.size()) &&
           EVP_EncryptFinal_ex(ctx.get(), ct_out.data() + outlen, &unused) &&
           EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag_out.data()) )) {
-      fprintf(stderr, "tag: 0x%02x%02x: Encryption failed.\n", tag.data()[0],tag.data()[1]);
+      fprintf(stderr, "tag: 0x%02x%02x: Encryption failed.\n", tag0, tag1);
       ERR_print_errors_fp(stderr);
     }
     if (memcmp(ct.data(), ct_out.data(), ct.size()) ||
@@ -656,18 +658,18 @@ static bool SpeedAESGCMChunk(const EVP_CIPHER *cipher, std::string name,
   // GCM uses 16 byte tags
   const size_t overhead_len = 16;
   std::unique_ptr<uint8_t[]> key(new uint8_t[key_len]);
-  BM_memset(key.get(), 0, key_len);
+  BM_memset(key.get(), 0x05, key_len);
   std::unique_ptr<uint8_t[]> nonce(new uint8_t[iv_len]);
-  BM_memset(nonce.get(), 0, iv_len);
+  BM_memset(nonce.get(), 0x07, iv_len);
   std::unique_ptr<uint8_t[]> plaintext_storage(new uint8_t[chunk_byte_len + kAlignment]);
   std::unique_ptr<uint8_t[]> ciphertext_storage(new uint8_t[chunk_byte_len + overhead_len + kAlignment]);
   std::unique_ptr<uint8_t[]> in2_storage(new uint8_t[chunk_byte_len + overhead_len + kAlignment]);
   std::unique_ptr<uint8_t[]> ad(new uint8_t[ad_len]);
-  BM_memset(ad.get(), 0, ad_len);
+  BM_memset(ad.get(), 0x0a, ad_len);
   std::unique_ptr<uint8_t[]> tag_storage(new uint8_t[overhead_len + kAlignment]);
 
   uint8_t *const plaintext = static_cast<uint8_t *>(align_pointer(plaintext_storage.get(), kAlignment));
-  BM_memset(plaintext, 0, chunk_byte_len);
+  BM_memset(plaintext, 0xc5, chunk_byte_len);
   uint8_t *const ciphertext = static_cast<uint8_t *>(align_pointer(ciphertext_storage.get(), kAlignment));
   BM_memset(ciphertext, 0, chunk_byte_len + overhead_len);
   uint8_t *const tag = static_cast<uint8_t *>(align_pointer(tag_storage.get(), kAlignment));
@@ -719,7 +721,6 @@ static bool SpeedAESGCMChunk(const EVP_CIPHER *cipher, std::string name,
     return false;
   }
   decryptResults.PrintWithBytes(decryptName, chunk_byte_len);
-
 
   return true;
 }

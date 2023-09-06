@@ -425,7 +425,7 @@ TEST(BIOTest, Gets) {
       check_bio_gets(bio.get());
     }
 
-    using ScopedFILE = std::unique_ptr<FILE, decltype(&fclose)>;
+    using ScopedFILE = std::unique_ptr<FILE, int(*)(FILE*)>;
     ScopedFILE file(tmpfile(), fclose);
 #if defined(OPENSSL_ANDROID)
     // On Android, when running from an APK, |tmpfile| does not work. See

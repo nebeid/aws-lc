@@ -101,6 +101,10 @@ extern "C" {
 #elif (defined(__PPC64__) || defined(__powerpc64__)) && defined(_LITTLE_ENDIAN)
 #define OPENSSL_64_BIT
 #define OPENSSL_PPC64LE
+#elif (defined(__PPC64__) || defined(__powerpc64__)) && defined(_BIG_ENDIAN)
+#define OPENSSL_64_BIT
+#define OPENSSL_PPC64BE
+#define OPENSSL_BIG_ENDIAN
 #elif (defined(__PPC__) || defined(__powerpc__)) && defined(_BIG_ENDIAN)
 #define OPENSSL_32_BIT
 #define OPENSSL_PPC32BE

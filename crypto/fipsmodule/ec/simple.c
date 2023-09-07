@@ -344,8 +344,20 @@ int ec_GFp_simple_felem_from_bytes(const EC_GROUP *group, EC_FELEM *out,
   }
 
   OPENSSL_memset(out, 0, sizeof(EC_FELEM));
-  for (size_t i = 0; i < len; i++) {
-    out->bytes[i] = in[len - 1 - i];
+  BN_ULONG word = 0;
+  size_t byte_iter = 0;
+  size_t word_iter = 0;
+  for (size_t i = len - 1; i < len; i--) {
+    BN_ULONG byte_value = in[i];
+    word = word | (byte_value << (8 * byte_iter));
+    if (++byte_iter == BN_BYTES) {
+      out->words[word_iter++] = word;
+      word = 0;
+      byte_iter = 0;
+    }
+  }
+  if (byte_iter != 0) {
+    out->words[word_iter] = word;
   }
 
   if (!bn_less_than_words(out->words, group->field.d, group->field.width)) {

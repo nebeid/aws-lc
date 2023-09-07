@@ -133,21 +133,24 @@ BIGNUM *BN_le2bn(const uint8_t *in, size_t len, BIGNUM *ret) {
   }
   ret->width = (int)num_words;
 
-  // Make sure the top bytes will be zeroed.
-  ret->d[num_words - 1] = 0;
-
 #ifdef OPENSSL_BIG_ENDIAN
-  BN_ULONG word = 0;
-  unsigned m;
+  BN_ULONG output_word = 0;
+  size_t byte_index = 0;
+  size_t output_word_index = 0;
 
-  m = (len - 1) % BN_BYTES;
-  for (size_t i = len -1; i < len; i--) {
-    word = (word << 8) | in[i];
-    if (m-- == 0) {
-      ret->d[--num_words] = word;
-      word = 0;
-      m = BN_BYTES - 1;
+  for (size_t i = 0; i < len; i++) {
+    BN_ULONG input_byte = in[i];
+    output_word |= (input_byte << (byte_index * 8));
+
+    if (++byte_index == BN_BYTES) {
+      ret->d[output_word_index++] = output_word;
+      output_word = 0;
+      byte_index = 0;
     }
+  }
+
+  if (byte_index != 0) {
+    ret->d[output_word_index] = output_word;
   }
 #else
   OPENSSL_memcpy(ret->d, in, len);

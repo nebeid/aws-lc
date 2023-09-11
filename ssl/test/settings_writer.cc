@@ -75,7 +75,7 @@ bool SettingsWriter::Commit() {
   }
   bssl::UniquePtr<uint8_t> free_settings(settings);
 
-  using ScopedFILE = std::unique_ptr<FILE, decltype(&fclose)>;
+  using ScopedFILE = std::unique_ptr<FILE, int(*)(FILE*)>;
   ScopedFILE file(fopen(path_.c_str(), "w"), fclose);
   if (!file) {
     return false;

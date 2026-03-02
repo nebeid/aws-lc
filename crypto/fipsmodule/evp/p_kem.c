@@ -366,8 +366,6 @@ int EVP_PKEY_kem_set_params(EVP_PKEY *pkey, int nid) {
     return 0;
   }
 
-  evp_pkey_set_method(pkey, &kem_asn1_meth);
-
   KEM_KEY *key = KEM_KEY_new();
   if (key == NULL) {
     // KEM_KEY_new sets the appropriate error.
@@ -375,7 +373,7 @@ int EVP_PKEY_kem_set_params(EVP_PKEY *pkey, int nid) {
   }
 
   key->kem = kem;
-  pkey->pkey.kem_key = key;
+  evp_pkey_set0(pkey, &kem_asn1_meth, key);
 
   return 1;
 }

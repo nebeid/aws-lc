@@ -1288,6 +1288,8 @@ OPENSSL_INLINE int boringssl_fips_break_test(const char *test) {
 //   6: sha256_block_data_order_shaext
 //   7: aes_gcm_encrypt_avx512
 //   8: RSAZ_mod_exp_avx512_x2
+//   9: sha3_keccak_f1600
+//  10: sha3_keccak4_f1600_alt
 // On AARCH64:
 //   0: aes_hw_ctr32_encrypt_blocks
 //   1: aes_hw_encrypt
@@ -1350,6 +1352,8 @@ OPENSSL_EXPORT int OPENSSL_vasprintf_internal(char **str, const char *format,
 #else
 #define AWSLC_ASSERT(x) __AWS_LC_ENSURE(x, abort())
 #endif
+
+#define AWSLC_ABORT_IF_NOT_ONE(x) __AWS_LC_ENSURE(1 == (x), abort())
 
 // Windows doesn't really support weak symbols as of May 2019, and Clang on
 // Windows will emit strong symbols instead. See

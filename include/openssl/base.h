@@ -41,17 +41,6 @@ extern "C" {
 #define AWSLC_FIPS
 #endif
 
-#if defined(__APPLE__)
-// Note |TARGET_OS_MAC| is set for all Apple OS variants. |TARGET_OS_OSX|
-// targets macOS specifically.
-#if defined(TARGET_OS_OSX) && TARGET_OS_OSX
-#define OPENSSL_MACOS
-#endif
-#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-#define OPENSSL_IOS
-#endif
-#endif
-
 #define AWSLC_VERSION_NAME "AWS-LC"
 #define OPENSSL_IS_AWSLC
 // |OPENSSL_VERSION_NUMBER| should match the version number in opensslv.h.
@@ -76,7 +65,7 @@ extern "C" {
 // ServiceIndicatorTest.AWSLCVersionString
 // Note: there are two versions of this test. Only one test is compiled
 // depending on FIPS mode.
-#define AWSLC_VERSION_NUMBER_STRING "1.70.0"
+#define AWSLC_VERSION_NUMBER_STRING "1.71.0"
 
 #if defined(BORINGSSL_SHARED_LIBRARY)
 

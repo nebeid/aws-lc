@@ -124,7 +124,7 @@ int EVP_marshal_public_key(CBB *cbb, const EVP_PKEY *key) {
 }
 
 static const unsigned kAttributesTag =
-    CBS_ASN1_CONTEXT_SPECIFIC | 0;
+    CBS_ASN1_CONTEXT_SPECIFIC | CBS_ASN1_CONSTRUCTED | 0;
 
 static const unsigned kPublicKeyTag =
     CBS_ASN1_CONTEXT_SPECIFIC | 1;
@@ -153,7 +153,7 @@ EVP_PKEY *EVP_parse_private_key(CBS *cbs) {
   // A PrivateKeyInfo & OneAsymmetricKey may optionally contain a SET of Attributes which
   // we ignore.
   if (CBS_peek_asn1_tag(&pkcs8, kAttributesTag)) {
-    if (!CBS_get_asn1(cbs, NULL, kAttributesTag)) {
+    if (!CBS_get_asn1(&pkcs8, NULL, kAttributesTag)) {
       OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
       return NULL;
     }

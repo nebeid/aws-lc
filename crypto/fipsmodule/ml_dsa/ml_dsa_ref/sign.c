@@ -39,7 +39,7 @@ static int ml_dsa_keypair_pct(ml_dsa_params *params,
 #endif
 
 /*************************************************
- * Name:        ml_dsa_keypair_internal
+ * Name:        ml_dsa_keypair_generate
  *
  * Description: FIPS 204: Algorithm 6 ML-DSA.KeyGen_internal.
  *              Generates public and private key. Internal API.
@@ -51,12 +51,12 @@ static int ml_dsa_keypair_pct(ml_dsa_params *params,
  *                             array of CRYPTO_SECRETKEYBYTES bytes)
  *              - const uint8_t *rnd: pointer to random seed
  *
- * Returns 0 (success) -1 on failure or abort depending on FIPS mode
+ * Returns 0 (success)
  **************************************************/
-int ml_dsa_keypair_internal(ml_dsa_params *params,
-                            uint8_t *pk,
-                            uint8_t *sk,
-                            const uint8_t *seed) {
+static OPENSSL_NOINLINE int ml_dsa_keypair_generate(ml_dsa_params *params,
+                                                  uint8_t *pk,
+                                                  uint8_t *sk,
+                                                  const uint8_t *seed) {
   uint8_t seedbuf[2 * ML_DSA_SEEDBYTES + ML_DSA_CRHBYTES];
   uint8_t tr[ML_DSA_TRBYTES];
   const uint8_t *rho, *rhoprime, *key;
@@ -109,6 +109,19 @@ int ml_dsa_keypair_internal(ml_dsa_params *params,
   OPENSSL_cleanse(&s2, sizeof(s2));
   OPENSSL_cleanse(&t1, sizeof(t1));
   OPENSSL_cleanse(&t0, sizeof(t0));
+
+  return 0;
+}
+
+int ml_dsa_keypair_internal(ml_dsa_params *params,
+                            uint8_t *pk,
+                            uint8_t *sk,
+                            const uint8_t *seed) {
+  // Unwind the key-generation workspace before the PCT allocates its workspace.
+  // The helper must remain out of line to preserve this stack-usage reduction.
+  if (ml_dsa_keypair_generate(params, pk, sk, seed) != 0) {
+    return -1;
+  }
 
 #if defined(AWSLC_FIPS)
   // Abort in case of PCT failure.

@@ -55,6 +55,8 @@
   MLD_ADD_PARAM_SET(mld_attempt_signature_generation) MLD_CONTEXT_PARAMETERS_8
 #define mld_compute_pack_t0_t1 \
   MLD_ADD_PARAM_SET(mld_compute_pack_t0_t1) MLD_CONTEXT_PARAMETERS_5
+#define mld_keypair_generate \
+  MLD_ADD_PARAM_SET(mld_keypair_generate) MLD_CONTEXT_PARAMETERS_3
 #define mld_get_max_signing_attempts \
   MLD_ADD_PARAM_SET(mld_get_max_signing_attempts)
 
@@ -347,11 +349,19 @@ cleanup:
 }
 
 MLD_MUST_CHECK_RETURN_VALUE
-MLD_EXTERNAL_API
-int mld_sign_keypair_internal(uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES],
-                              uint8_t sk[MLDSA_CRYPTO_SECRETKEYBYTES],
-                              const uint8_t seed[MLDSA_SEEDBYTES],
-                              MLD_CONFIG_CONTEXT_PARAMETER_TYPE context)
+static MLD_NOINLINE int mld_keypair_generate(
+    uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES],
+    uint8_t sk[MLDSA_CRYPTO_SECRETKEYBYTES],
+    const uint8_t seed[MLDSA_SEEDBYTES],
+    MLD_CONFIG_CONTEXT_PARAMETER_TYPE context)
+__contract__(
+  requires(memory_no_alias(pk, MLDSA_CRYPTO_PUBLICKEYBYTES))
+  requires(memory_no_alias(sk, MLDSA_CRYPTO_SECRETKEYBYTES))
+  requires(memory_no_alias(seed, MLDSA_SEEDBYTES))
+  assigns(object_whole(pk))
+  assigns(object_whole(sk))
+  ensures(return_value == 0 || return_value == MLD_ERR_OUT_OF_MEMORY)
+)
 {
   int ret;
   const uint8_t *rho, *rhoprime, *key;
@@ -419,6 +429,20 @@ cleanup:
   MLD_FREE(tr, uint8_t, MLDSA_TRBYTES, context);
   MLD_FREE(inbuf, uint8_t, MLDSA_SEEDBYTES + 2, context);
   MLD_FREE(seedbuf, uint8_t, 2 * MLDSA_SEEDBYTES + MLDSA_CRHBYTES, context);
+
+  return ret;
+}
+
+MLD_MUST_CHECK_RETURN_VALUE
+MLD_EXTERNAL_API
+int mld_sign_keypair_internal(uint8_t pk[MLDSA_CRYPTO_PUBLICKEYBYTES],
+                              uint8_t sk[MLDSA_CRYPTO_SECRETKEYBYTES],
+                              const uint8_t seed[MLDSA_SEEDBYTES],
+                              MLD_CONFIG_CONTEXT_PARAMETER_TYPE context)
+{
+  /* Unwind the key-generation workspace before the PCT. Keep the helper
+   * out of line so its stack allocations do not overlap with signing. */
+  int ret = mld_keypair_generate(pk, sk, seed, context);
 
   /* Pairwise Consistency Test (PCT) @[FIPS140_3_IG, p.87] */
   /* Do this after freeing all temporaries. */
@@ -1715,6 +1739,7 @@ cleanup:
 #undef mld_compute_pack_z
 #undef mld_attempt_signature_generation
 #undef mld_compute_pack_t0_t1
+#undef mld_keypair_generate
 #undef mld_get_max_signing_attempts
 #undef MLD_MAX_SIGNING_ATTEMPTS
 #undef MLD_PRE_HASH_OID_LEN
